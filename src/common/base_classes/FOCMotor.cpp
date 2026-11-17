@@ -661,6 +661,28 @@ void FOCMotor::loopFOC() {
       SIMPLEFOC_MOTOR_ERROR("no torque control selected!");
       break;
   }
+  // dq current used for the dead-time compensation
+  if (deadtime_compensation > 0) {
+    switch (torque_controller) {
+      case TorqueControlType::foc_current:
+        if (deadtime_comp_use_measured) deadtime_comp_current = current;
+        else { deadtime_comp_current.q = current_sp; deadtime_comp_current.d = feed_forward_current.d; }
+        break;
+      case TorqueControlType::estimated_current:
+      case TorqueControlType::dc_current:
+        deadtime_comp_current.q = current_sp;
+        deadtime_comp_current.d = 0;
+        break;
+      case TorqueControlType::voltage:
+      default:
+        // no current information: use the applied voltage, I = U/R
+        // (the 1/R factor is folded into the compensation gain to avoid extra divisions)
+        deadtime_comp_current.q = voltage.q;
+        deadtime_comp_current.d = voltage.d;
+        break;
+    }
+  }
+
   // set the phase voltage - FOC heart function :)
   setPhaseVoltage(voltage.q, voltage.d, electrical_angle);
 }

@@ -235,6 +235,25 @@ void BLDCMotor::setPhaseVoltage(float Uq, float Ud, float angle_el) {
         Ub = -0.5f * Ualpha + _SQRT3_2 * Ubeta;
         Uc = -0.5f * Ualpha - _SQRT3_2 * Ubeta;
 
+        // dead-time compensation
+        // - phase current directions estimated from the dq currents (no noisy raw phase currents)
+        // - linear ramp around zero current instead of sign() to avoid chattering at zero crossing
+        // - a single division, reuses the modulation sin/cos (suited to MCUs without FPU)
+        if (deadtime_compensation > 0 && motor_status == FOCMotorStatus::motor_ready) {
+          // in voltage mode the dq "current" is the dq voltage, the resistance is folded into the gain
+          float r = (torque_controller == TorqueControlType::voltage && _isset(phase_resistance) && phase_resistance > 0) ? phase_resistance : 1.0f;
+          float th = deadtime_comp_threshold > 0 ? deadtime_comp_threshold : 1e-3f;
+          float gain = deadtime_compensation / (th * r);
+          // inverse Park + Clarke, Ic from Kirchhoff
+          float Ia = _ca * deadtime_comp_current.d - _sa * deadtime_comp_current.q;
+          float Ibeta = _sa * deadtime_comp_current.d + _ca * deadtime_comp_current.q;
+          float Ib = -0.5f * Ia + _SQRT3_2 * Ibeta;
+          float Ic = -Ia - Ib;
+          Ua += _constrain(Ia * gain, -deadtime_compensation, deadtime_compensation);
+          Ub += _constrain(Ib * gain, -deadtime_compensation, deadtime_compensation);
+          Uc += _constrain(Ic * gain, -deadtime_compensation, deadtime_compensation);
+        }
+
         // centering the voltages around either
         // - centered modulation: around driver.voltage_limit/2
         // - non-centered modulation: pulls the lowest voltage to 0 
@@ -267,4 +286,92 @@ void BLDCMotor::setPhaseVoltage(float Uq, float Ud, float angle_el) {
 
   // set the voltages in driver
   driver->setPwm(Ua, Ub, Uc);
+}
+
+// Measure the dead-time voltage error and set deadtime_compensation
+// Applies a DC voltage on the d axis at electrical angle 0 (phase A axis), in both directions:
+//   Ua = Ud, Ub = Uc = -Ud/2  ->  Ialpha = Ia = (Ud - U0) / R
+// The dead-time error of the 3 phases seen on the alpha axis is U0 = 4/3 * Udt
+// (Clarke: 2/3 * (Udt + Udt/2 + Udt/2)), so Udt = 3/4 * U0.
+// Measuring both directions cancels the current sense offsets.
+float BLDCMotor::calibrateDeadtimeCompensation(float max_current) {
+  if (!current_sense || !current_sense->initialized) {
+    SIMPLEFOC_MOTOR_ERROR("Fail. CS not init.");
+    return NOT_SET;
+  }
+  if (max_current <= 0) {
+    SIMPLEFOC_MOTOR_ERROR("Fail. I <= 0");
+    return NOT_SET;
+  }
+  SIMPLEFOC_MOTOR_DEBUG("Meas deadtime..");
+
+  // disable the compensation during the measurement
+  FOCMotorStatus prev_status = motor_status;
+  motor_status = FOCMotorStatus::motor_calibrating;
+
+  // linear regression sums U = R*I + U0
+  float sum_i = 0, sum_u = 0, sum_ii = 0, sum_iu = 0;
+  int n = 0;
+  const int n_points = 15;
+
+  for (int dir = 1; dir >= -1; dir -= 2) {
+    // align the rotor on the d axis so that it doesn't move during the measurement
+    for (int i = 0; i <= 100; i++) {
+      setPhaseVoltage(0, dir * voltage_sensor_align * i / 100.0f, 0);
+      _delay(3);
+    }
+    _delay(300);
+
+    // coarse ramp to find the voltage giving max_current
+    float u_max = 0;
+    for (float u = 0; u <= voltage_limit; u += voltage_limit / 500.0f) {
+      setPhaseVoltage(0, dir * u, 0);
+      _delay(2);
+      DQCurrent_s c = current_sense->getDQCurrents(current_sense->getABCurrents(current_sense->getPhaseCurrents()), 0);
+      u_max = u;
+      if (dir * c.d >= max_current) break;
+    }
+
+    // measurement points between 30% and 100% of u_max
+    for (int k = 0; k < n_points; k++) {
+      float u = u_max * (0.3f + 0.7f * k / (n_points - 1));
+      setPhaseVoltage(0, dir * u, 0);
+      _delay(20);
+      DQCurrent_s c = current_sense->getDQCurrents(current_sense->getABCurrents(current_sense->readAverageCurrents(10)), 0);
+      // keep only the points well above the dead-time knee (non linear around zero current)
+      if (fabsf(c.d) < 0.25f * max_current) continue;
+      // |I| with the current sense offset of opposite sign in each direction:
+      // fitting both directions together cancels the offset
+      float i_s = dir * c.d;
+      sum_i += i_s; sum_u += u; sum_ii += i_s * i_s; sum_iu += i_s * u;
+      n++;
+    }
+    // smooth release
+    for (int i = 100; i >= 0; i--) {
+      setPhaseVoltage(0, dir * u_max * i / 100.0f, 0);
+      _delay(2);
+    }
+    _delay(200);
+  }
+  setPhaseVoltage(0, 0, 0);
+  motor_status = prev_status;
+
+  float den = n * sum_ii - sum_i * sum_i;
+  if (n < 4 || den <= 0) {
+    SIMPLEFOC_MOTOR_ERROR("Fail. Not enough points");
+    return NOT_SET;
+  }
+  float R = (n * sum_iu - sum_i * sum_u) / den;
+  float U0 = (sum_u - R * sum_i) / n;
+  if (R <= 0 || U0 <= 0) {
+    SIMPLEFOC_MOTOR_ERROR("Fail. R or U0 <= 0");
+    return NOT_SET;
+  }
+  float Udt = 0.75f * U0;
+  SIMPLEFOC_MOTOR_DEBUG("Est. R: ", R);
+  SIMPLEFOC_MOTOR_DEBUG("Est. deadtime comp: ", Udt);
+  // with deadtime_comp_use_measured the ramp acts as a negative resistance, it has to stay below R
+  SIMPLEFOC_MOTOR_DEBUG("Min. threshold (measured): ", Udt / R);
+  deadtime_compensation = Udt;
+  return Udt;
 }
