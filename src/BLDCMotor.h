@@ -64,6 +64,18 @@ class BLDCMotor: public FOCMotor
      */
     float estimateBEMF(float velocity) override;
 
+    /**
+     * Measure the dead-time voltage error and set deadtime_compensation.
+     * A DC voltage is applied on the d axis (rotor aligned, no movement) in both directions,
+     * the voltage/current points are fitted with U = R*I + U0 and the offset U0 gives the
+     * dead-time voltage error (measures the effective dead-time, including switching delays).
+     * Needs a current sense, to be called after initFOC().
+     *
+     * @param max_current maximum current used for the measurement [A]
+     * @returns measured dead-time compensation [V] or NOT_SET if the measurement failed
+     */
+    float calibrateDeadtimeCompensation(float max_current);
+
 
     // Methods overriding the FOCMotor default behavior
 
