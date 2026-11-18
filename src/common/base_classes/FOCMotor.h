@@ -247,6 +247,15 @@ class FOCMotor
     FOCModulationType foc_modulation;//!<  parameter determining modulation algorithm
     int8_t modulation_centered = 1;//!< flag (1) centered modulation around driver limit /2  or  (0) pulled to 0
 
+    // dead-time compensation (SinePWM and SpaceVectorPWM only)
+    // Each phase voltage is shifted by +/- deadtime_compensation depending on the estimated phase current direction.
+    // The phase currents are reconstructed from dq currents (setpoint or filtered measurement) so no noisy
+    // raw phase current is used, and a linear ramp is used around zero current instead of a hard sign().
+    float deadtime_compensation = 0.0f; //!< voltage error compensated on each phase [V] ~ Vdc*(t_dead + t_on - t_off)/T_pwm, 0 = disabled
+    float deadtime_comp_threshold = 0.1f; //!< phase current [A] (or [V] in voltage mode without phase_resistance) above which full compensation is applied
+    int8_t deadtime_comp_use_measured = 0; //!< foc_current only: 0 - use dq current setpoints, 1 - use filtered measured dq currents
+    DQCurrent_s deadtime_comp_current = {0, 0}; //!< dq current used to estimate the phase current directions (updated in loopFOC)
+
 
     // configuration structures
     TorqueControlType torque_controller; //!< parameter determining the torque control type
