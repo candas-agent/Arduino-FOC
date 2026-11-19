@@ -1,0 +1,107 @@
+# Compiles the examples of the other workflows with PlatformIO in 3 ways (see .github/scripts/pio_libarchive.py):
+# lib_archive = false in the project (docs), no library.json (registry package), complete library.json (fixed).
+# Checks that the complete library.json gives the same hardware functions as lib_archive = false, and reports
+# flash / RAM. Also checks that the library can be packed for the PlatformIO registry with its library.json.
+name: PlatformIO library archiving
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install --upgrade platformio
+      - name: Pack with a library.json containing only "build" (as on master/dev)
+        run: |
+          mkdir -p "$RUNNER_TEMP/old" && rsync -a --exclude .git ./ "$RUNNER_TEMP/old/"
+          echo '{"build": {"libArchive": false}}' > "$RUNNER_TEMP/old/library.json"
+          if pio pkg pack "$RUNNER_TEMP/old" -o "$RUNNER_TEMP"; then r="packed"; else r="**fails** (no name/version): the registry package cannot contain this library.json"; fi
+          echo "- Pack with the current library.json: $r" >> "$GITHUB_STEP_SUMMARY"
+      - name: Pack with the complete library.json (must succeed and contain library.json)
+        run: |
+          mkdir -p "$RUNNER_TEMP/pkg"
+          pio pkg pack . -o "$RUNNER_TEMP/pkg"
+          tar -tzf "$RUNNER_TEMP"/pkg/*.tar.gz | grep -x library.json
+          echo "- Pack with the complete library.json: packed, library.json included" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # arduino.yml
+          - { name: uno, platform: atmelavr, board: uno, sketches: '**', lib_deps: 'prampec/PciManager',
+              exclude: 'align_current_sense, measure_inductance_and_resistance, teensy4_current_control_low_side, full_control_serial, angle_control, bluepill_position_control, esp32_position_control, esp32_i2c_dual_bus_example, stm32_i2c_dual_bus_example, magnetic_sensor_spi_alt_example, osc_esp32_3pwm, osc_esp32_fullcontrol, nano33IoT_velocity_control, smartstepper_control, esp32_current_control_low_side, stm32_spi_alt_example, esp32_spi_alt_example, B_G431B_ESC1, odrive_example_spi, odrive_example_encoder, single_full_control_example, double_full_control_example, stm32_current_control_low_side, open_loop_velocity_6pwm, efr32_hall_sensor_velocity_6pwm, efr32_open_loop_velocity_6pwm, efr32_torque_velocity_6pwm, custom_motion_control' }
+          - { name: due, platform: atmelsam, board: due, sketches: 'single_full_control_example' }
+          - { name: mega, platform: atmelavr, board: megaatmega2560, sketches: 'single_full_control_example' }
+          - { name: leonardo, platform: atmelavr, board: leonardo, sketches: 'open_loop_position_example' }
+          # arduino_mbed.yml (envie_m7 = Portenta H7 M7)
+          - { name: nanorp2040connect, platform: raspberrypi, board: nanorp2040connect, sketches: 'open_loop_position_example' }
+          - { name: nano33ble, platform: nordicnrf52, board: nano33ble, sketches: 'open_loop_position_example' }
+          - { name: portenta_h7_m7, platform: ststm32, board: portenta_h7_m7, sketches: 'open_loop_position_example' }
+          # esp32.yml (Arduino core 3 through pioarduino, as the Arduino workflow uses the current core)
+          - { name: esp32s2, platform: 'https://github.com/pioarduino/platform-espressif32/releases/download/stable/platform-espressif32.zip', board: esp32-s2-saola-1,
+              sketches: 'bldc_driver_3pwm_standalone, stepper_driver_2pwm_standalone, stepper_driver_4pwm_standalone' }
+          - { name: esp32s3, platform: 'https://github.com/pioarduino/platform-espressif32/releases/download/stable/platform-espressif32.zip', board: esp32-s3-devkitc-1,
+              sketches: 'esp32_position_control, esp32_i2c_dual_bus_example' }
+          - { name: esp32c3, platform: 'https://github.com/pioarduino/platform-espressif32/releases/download/stable/platform-espressif32.zip', board: esp32-c3-devkitm-1,
+              sketches: 'esp32_position_control, stepper_driver_2pwm_standalone, stepper_driver_4pwm_standalone' }
+          - { name: esp32, platform: 'https://github.com/pioarduino/platform-espressif32/releases/download/stable/platform-espressif32.zip', board: esp32doit-devkit-v1,
+              sketches: 'esp32_position_control, esp32_i2c_dual_bus_example, esp32_current_control_low_side, esp32_spi_alt_example' }
+          # rpi.yml
+          - { name: pico, platform: raspberrypi, board: pico, sketches: 'open_loop_position_example' }
+          # samd.yml
+          - { name: nano_33_iot, platform: atmelsam, board: nano_33_iot, sketches: 'nano33IoT_velocity_control, smartstepper_control' }
+          - { name: metro_m4, platform: atmelsam, board: adafruit_metro_m4, sketches: 'single_full_control_example' }
+          # stm32.yml (GENERIC_L475RGTX has no PlatformIO board: disco_l475vg_iot01a, same family)
+          - { name: bluepill, platform: ststm32, board: bluepill_f103c8, sketches: 'bluepill_position_control, stm32_i2c_dual_bus_example, stm32_spi_alt_example' }
+          - { name: b_g431b_esc1, platform: ststm32, board: disco_b_g431b_esc1, sketches: 'B_G431B_ESC1', flags: '-DHAL_OPAMP_MODULE_ENABLED' }
+          - { name: f405, platform: ststm32, board: genericSTM32F405RG, sketches: 'odrive_example_encoder, odrive_example_spi, stm32_current_control_low_side' }
+          - { name: l475, platform: ststm32, board: disco_l475vg_iot01a, sketches: 'single_full_control_example, stm32_spi_alt_example, double_full_control_example, stm32_current_control_low_side' }
+          - { name: nucleo_f411re, platform: ststm32, board: nucleo_f411re, sketches: 'single_full_control_example, stm32_spi_alt_example, double_full_control_example, stm32_current_control_low_side, custom_motion_control' }
+          - { name: nucleo_f746zg, platform: ststm32, board: nucleo_f746zg, sketches: 'single_full_control_example, stm32_spi_alt_example, double_full_control_example, stm32_current_control_low_side, custom_motion_control' }
+          - { name: nucleo_h723zg, platform: ststm32, board: nucleo_h723zg, sketches: 'single_full_control_example, stm32_spi_alt_example, double_full_control_example, stm32_current_control_low_side, custom_motion_control' }
+          - { name: nucleo_g431rb, platform: ststm32, board: nucleo_g431rb, sketches: 'single_full_control_example, stm32_spi_alt_example, double_full_control_example, stm32_current_control_low_side, custom_motion_control' }
+          # teensy.yml
+          - { name: teensy41, platform: teensy, board: teensy41,
+              sketches: 'examples/hardware_specific_examples/Teensy/Teensy4/bldc_driver_6pwm_standalone/bldc_driver_6pwm_standalone.ino, examples/hardware_specific_examples/Teensy/Teensy4/open_loop_velocity_6pwm/open_loop_velocity_6pwm.ino, teensy4_current_control_low_side' }
+          - { name: teensy36, platform: teensy, board: teensy36,
+              sketches: 'examples/hardware_specific_examples/Teensy/Teensy3/bldc_driver_6pwm_standalone/bldc_driver_6pwm_standalone.ino, examples/hardware_specific_examples/Teensy/Teensy3/open_loop_velocity_6pwm/open_loop_velocity_6pwm.ino' }
+          # Silicon Labs nano_matter (silabs.yml): no PlatformIO board, not tested
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ matrix.name }}-${{ hashFiles('.github/workflows/platformio_libarchive.yml') }}
+      - run: pip install --upgrade platformio
+      - name: Build docs / registry / fixed
+        run: >
+          python .github/scripts/pio_libarchive.py --name "${{ matrix.name }}" --platform "${{ matrix.platform }}"
+          --board "${{ matrix.board }}" --sketches "${{ matrix.sketches }}" --exclude="${{ matrix.exclude }}"
+          --flags="${{ matrix.flags }}" --lib-deps="${{ matrix.lib_deps }}" --out results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-${{ matrix.name }}
+          path: results/
+
+  summary:
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: results-*
+          path: results
+          merge-multiple: true
+      - run: python .github/scripts/pio_libarchive.py --summarize results >> "$GITHUB_STEP_SUMMARY"
