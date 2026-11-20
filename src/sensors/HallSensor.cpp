@@ -131,11 +131,17 @@ float HallSensor::getVelocity(){
   long last_pulse_timestamp = pulse_timestamp;
   long last_pulse_diff = pulse_diff;
   interrupts();
-  if (last_pulse_diff == 0 || ((long)(_micros() - last_pulse_timestamp) > last_pulse_diff*2) ) { // last velocity isn't accurate if too old
-    return 0;
-  } else {
-    return direction * (_2PI / (float)cpr) / (last_pulse_diff / 1000000.0f);
-  }
+  if (last_pulse_diff == 0) return 0;  // no valid sector time yet (start, or direction just changed)
+
+  // The last sector took last_pulse_diff. If more time has already passed since the last edge, the rotor is now
+  // slower than that: it has not covered a full sector in that time, otherwise the next edge would have come.
+  // Use the longer of the two: the velocity decays smoothly instead of holding its value and then dropping to 0,
+  // which made the velocity loop jerk at low speed.
+  long since_edge = (long)(_micros() - last_pulse_timestamp);
+  long dt = (since_edge > last_pulse_diff) ? since_edge : last_pulse_diff;
+  if (since_edge < 0 || (unsigned long)dt > velocity_timeout_us) return 0;  // standstill (or _micros() wrapped)
+
+  return direction * (_2PI / (float)cpr) / (dt / 1000000.0f);
 
 }
 
