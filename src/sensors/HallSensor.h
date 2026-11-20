@@ -79,6 +79,9 @@ class HallSensor: public Sensor{
     // variable used to filter outliers - rad/s
     float velocity_max = 1000.0f;
 
+    // velocity reported as 0 when no hall edge came for this time [us] (below one sector per velocity_timeout_us)
+    unsigned long velocity_timeout_us = 200000;
+
   private:
     
     Direction decodeDirection(int oldState, int newState);
