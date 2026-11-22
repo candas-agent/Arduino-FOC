@@ -28,10 +28,13 @@ public:
     PIDController(float P, float I, float D, float ramp = NOT_SET, float limit = NOT_SET, float sampling_time = NOT_SET);
     ~PIDController() = default;
 
-    /** measures the elapsed time since the previous call (or uses Ts), then calls compute() */
     float operator() (float error);
-    /** the PID computation, with the elapsed time dt [s] given by the caller (e.g. measured once per loop) */
-    float compute(float error, float dt);
+    /**
+     * Same as operator()(error), with the present time given by the caller instead of read with _micros()
+     * (e.g. one clock read per control loop for several controllers)
+     * @param now_us - present time [us], from _micros()
+     */
+    float operator() (float error, unsigned long now_us);
     void reset();
 
     float P; //!< Proportional gain 

@@ -11,12 +11,17 @@ LowPassFilter::LowPassFilter(float time_constant, float sampling_time)
 
 float LowPassFilter::operator() (float x)
 {
+    return operator()(x, _micros());
+}
+
+float LowPassFilter::operator() (float x, unsigned long now_us)
+{
     // initalise the elapsed time with the fixed sampling tims Ts
     float dt = Ts; 
     // if Ts is not set, use adaptive sampling time
     // calculate the ellapsed time dt
     if(!_isset(dt)){
-        unsigned long timestamp = _micros();
+        unsigned long timestamp = now_us;
         dt = (timestamp - timestamp_prev)*1e-6f;
 
         if (dt < 0.0f ) dt = 1e-3f;
@@ -27,12 +32,7 @@ float LowPassFilter::operator() (float x)
         }
         timestamp_prev = timestamp;
     }
-    return filter(x, dt);
-}
 
-// filter computation with a given elapsed time dt [s]
-float LowPassFilter::filter(float x, float dt)
-{
     // calculate the first order filer
     float alpha = Tf/(Tf + dt);
     float y = alpha*y_prev + (1.0f - alpha)*x;

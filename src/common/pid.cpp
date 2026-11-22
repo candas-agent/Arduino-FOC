@@ -16,22 +16,22 @@ PIDController::PIDController(float P, float I, float D, float ramp, float limit,
 
 // PID controller function
 float PIDController::operator() (float error){
+    return operator()(error, _micros());
+}
+
+float PIDController::operator() (float error, unsigned long now_us){
     // initalise the elapsed time with the fixed sampling tims Ts
     float dt = Ts; 
     // if Ts is not set, use adaptive sampling time
     // calculate the ellapsed time dt
     if(!_isset(dt)){
-        unsigned long timestamp_now = _micros();
+        unsigned long timestamp_now = now_us;
         dt = (timestamp_now - timestamp_prev) * 1e-6f;
         // quick fix for strange cases (micros overflow)
         if(dt <= 0 || dt > 0.5f) dt = 1e-3f;
         timestamp_prev = timestamp_now;
     }
-    return compute(error, dt);
-}
 
-// PID computation with a given elapsed time dt [s]
-float PIDController::compute(float error, float dt){
     // u(s) = (P + I/s + Ds)e(s)
     // Discrete implementations
     // proportional part
