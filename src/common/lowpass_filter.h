@@ -27,6 +27,8 @@ public:
     float operator() (float x);
     /** the filter computation, with the elapsed time dt [s] given by the caller (must be > 0) */
     float filter(float x, float dt);
+    /** restarts the filter from the value x (what operator() does after more than 0.3 s without a call) */
+    void reset(float x);
     float Tf; //!< Low pass filter time constant
     float Ts; //!< Fixed sampling time (optional default NOT_SET)
 

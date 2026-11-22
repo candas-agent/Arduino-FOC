@@ -407,8 +407,16 @@ class FOCMotor
     int absoluteZeroSearch();
     
     uint32_t last_loopfoc_timestamp_us = 0; //!< timestamp of the last loopFOC execution in microseconds
+    // Current filters and controllers called with the loop timestamp (one clock read per loop): time of the last
+    // call of each one, kept like their own timestamp in operator(), and the last elapsed time converted to seconds
+    // (shared when they were called at the same time, the usual case)
+    uint32_t lpf_current_q_us, lpf_current_d_us, pid_current_q_us, pid_current_d_us;
+    uint32_t elapsed_us = 0;
+    float elapsed_s = 0.0f;
+    float elapsedSince(uint32_t& prev_us, uint32_t now_us, bool in_loop);
+    float currentLPF(LowPassFilter& lpf, uint32_t& prev_us, float x, uint32_t now_us, bool in_loop);
+    float currentPID(PIDController& pid, uint32_t& prev_us, float error, uint32_t now_us, bool in_loop);
     uint32_t last_loopfoc_time_us = 0; //!< last elapsed time of loopFOC in microseconds
-    uint32_t foc_current_timestamp_us = 0; //!< timestamp of the last foc_current step (loopFOC timestamp)
     uint32_t last_move_timestamp_us = 0; //!< timestamp of the last move execution in microseconds
     uint32_t last_move_time_us = 0; //!< last elapsed time of move in microseconds
   private:

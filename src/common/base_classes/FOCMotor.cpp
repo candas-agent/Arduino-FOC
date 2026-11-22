@@ -21,6 +21,9 @@ FOCMotor::FOCMotor()
   // default modulation is SinePWM
   foc_modulation = FOCModulationType::SinePWM;
 
+  // same start time as the timestamps of the current filters and controllers (set in their constructors)
+  lpf_current_q_us = lpf_current_d_us = pid_current_q_us = pid_current_d_us = _micros();
+
   // default target value
   target = 0;
   voltage.d = 0;
@@ -355,8 +358,10 @@ void FOCMotor::monitor() {
     DQCurrent_s c = current;
     if( current_sense && torque_controller != TorqueControlType::foc_current ){
       c = current_sense->getFOCCurrents(electrical_angle);
-      c.q = LPF_current_q(c.q);
-      c.d = LPF_current_d(c.d);
+      // same filters as loopFOC, with the present time (they keep one time history)
+      uint32_t now_us = _micros();
+      c.q = currentLPF(LPF_current_q, lpf_current_q_us, c.q, now_us, false);
+      c.d = currentLPF(LPF_current_d, lpf_current_d_us, c.d, now_us, false);
     }
     if(monitor_variables & _MON_CURR_Q) {
       if(!printed && monitor_start_char) monitor_port->print(monitor_start_char);
@@ -588,6 +593,39 @@ int FOCMotor::tuneCurrentController(float bandwidth) {
 
 
 
+// Elapsed time [s] from prev_us to now_us. In loopFOC (in_loop) the conversion to seconds is done once when several
+// filters / controllers were called at the same time (same elapsed microseconds). Not shared with monitor(), which
+// may run outside the context of loopFOC (e.g. loopFOC in an interrupt).
+float FOCMotor::elapsedSince(uint32_t& prev_us, uint32_t now_us, bool in_loop) {
+  uint32_t d = now_us - prev_us;
+  prev_us = now_us;
+  if (!in_loop) return d * 1e-6f;
+  if (d != elapsed_us) {
+    elapsed_us = d;
+    elapsed_s = d * 1e-6f;
+  }
+  return elapsed_s;
+}
+
+// Current filter with the loop timestamp: same rules as LowPassFilter::operator()
+float FOCMotor::currentLPF(LowPassFilter& lpf, uint32_t& prev_us, float x, uint32_t now_us, bool in_loop) {
+  if (_isset(lpf.Ts)) return lpf.filter(x, lpf.Ts);  // fixed sampling time set by the user (time not tracked)
+  float dt = elapsedSince(prev_us, now_us, in_loop);
+  if (dt > 0.3f) {                                     // after a pause: restart from the new value
+    lpf.reset(x);
+    return x;
+  }
+  return lpf.filter(x, dt);
+}
+
+// Current controller with the loop timestamp: same rules as PIDController::operator()
+float FOCMotor::currentPID(PIDController& pid, uint32_t& prev_us, float error, uint32_t now_us, bool in_loop) {
+  if (_isset(pid.Ts)) return pid.compute(error, pid.Ts);  // fixed sampling time set by the user (time not tracked)
+  float dt = elapsedSince(prev_us, now_us, in_loop);
+  if (dt <= 0 || dt > 0.5f) dt = 1e-3f;                   // same quick fix as operator()
+  return pid.compute(error, dt);
+}
+
 // Iterative function looping FOC algorithm, setting Uq on the Motor
 // The faster it can be run the better
 void FOCMotor::loopFOC() {
@@ -626,7 +664,7 @@ void FOCMotor::loopFOC() {
       // calculate the back-emf voltage if KV_rating available U_bemf = vel*(1/KV)
       if (_isset(KV_rating)) voltage_bemf = estimateBEMF(shaft_velocity);
       // filter the value values
-      current.q = LPF_current_q(current_sp);
+      current.q = currentLPF(LPF_current_q, lpf_current_q_us, current_sp, last_loopfoc_timestamp_us, true);
       // calculate the phase voltage
       voltage.q = current.q * phase_resistance + voltage_bemf;
       // constrain voltage within limits
@@ -642,9 +680,9 @@ void FOCMotor::loopFOC() {
       // read overall current magnitude
       current.q = current_sense->getDCCurrent(electrical_angle);
       // filter the value values
-      current.q = LPF_current_q(current.q);
+      current.q = currentLPF(LPF_current_q, lpf_current_q_us, current.q, last_loopfoc_timestamp_us, true);
       // calculate the phase voltage
-      voltage.q = PID_current_q(current_sp - current.q) + feed_forward_voltage.q;
+      voltage.q = currentPID(PID_current_q, pid_current_q_us, current_sp - current.q, last_loopfoc_timestamp_us, true) + feed_forward_voltage.q;
       // d voltage  - lag compensation
       if(_isset(axis_inductance.q)) voltage.d = _constrain( -current_sp*shaft_velocity*pole_pairs*axis_inductance.q, -voltage_limit, voltage_limit) + feed_forward_voltage.d;
       else voltage.d = feed_forward_voltage.d;
@@ -655,26 +693,12 @@ void FOCMotor::loopFOC() {
       current_sp = _constrain(current_sp, -current_limit, current_limit) + feed_forward_current.q;
       // read dq currents
       current = current_sense->getFOCCurrents(electrical_angle);
-      {
-        // one elapsed time for the 2 filters and the 2 controllers: time since the previous foc_current step,
-        // from the timestamp read at the start of loopFOC (no extra clock read)
-        float dt = (last_loopfoc_timestamp_us - foc_current_timestamp_us) * 1e-6f;
-        foc_current_timestamp_us = last_loopfoc_timestamp_us;
-        if (dt > 0.0f && dt < 0.3f) {
-          // a fixed sampling time Ts set by the user has priority, as in operator()
-          current.q = LPF_current_q.filter(current.q, _isset(LPF_current_q.Ts) ? LPF_current_q.Ts : dt);
-          current.d = LPF_current_d.filter(current.d, _isset(LPF_current_d.Ts) ? LPF_current_d.Ts : dt);
-          voltage.q = PID_current_q.compute(current_sp - current.q, _isset(PID_current_q.Ts) ? PID_current_q.Ts : dt);
-          voltage.d = PID_current_d.compute(feed_forward_current.d - current.d, _isset(PID_current_d.Ts) ? PID_current_d.Ts : dt);
-        } else {
-          // first step, or after a pause (motor disabled, other torque mode): the filters and controllers
-          // apply their own dt checks, as before (the filters restart from the new value)
-          current.q = LPF_current_q(current.q);
-          current.d = LPF_current_d(current.d);
-          voltage.q = PID_current_q(current_sp - current.q);
-          voltage.d = PID_current_d(feed_forward_current.d - current.d);
-        }
-      }
+      // filter values
+      current.q = currentLPF(LPF_current_q, lpf_current_q_us, current.q, last_loopfoc_timestamp_us, true);
+      current.d = currentLPF(LPF_current_d, lpf_current_d_us, current.d, last_loopfoc_timestamp_us, true);
+      // calculate the phase voltages
+      voltage.q = currentPID(PID_current_q, pid_current_q_us, current_sp - current.q, last_loopfoc_timestamp_us, true);
+      voltage.d = currentPID(PID_current_d, pid_current_d_us, feed_forward_current.d - current.d, last_loopfoc_timestamp_us, true);
       // d voltage - lag compensation
       //if(_isset(axis_inductance.q)) voltage.d = _constrain( voltage.d - current_sp*shaft_velocity*pole_pairs*axis_inductance.q, -voltage_limit, voltage_limit);
       // q voltage - cross coupling compensation - TODO verify

@@ -30,6 +30,11 @@ float LowPassFilter::operator() (float x)
     return filter(x, dt);
 }
 
+void LowPassFilter::reset(float x)
+{
+    y_prev = x;
+}
+
 // filter computation with a given elapsed time dt [s]
 float LowPassFilter::filter(float x, float dt)
 {
